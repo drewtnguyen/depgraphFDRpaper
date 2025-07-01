@@ -91,7 +91,7 @@ which could also be found by navigating the [download links of the Psychiatric G
 To obtain `g1000_eur`, download the file `g1000_eur.zip` from 
 [this link](https://vu.data.surfsara.nl/index.php/s/VZNByNwpD8qqINe), 
 which could also be found by navigating the [download links of the MAGMA software maintainers](https://cncr.nl/research/magma/) to find the download link corresponding 
-to reference data files from Phase 3 of 1,000 Genomes (European ancestry). 
+to reference data files from Phase 3 of 1,000 Genomes (European ancestry). Unzip the file.
 
 
 ## Generate the plot
