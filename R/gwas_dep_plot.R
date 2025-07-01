@@ -1,4 +1,3 @@
-
 # Access necessary packages
 library(data.table)
 library(tidyverse)
@@ -7,9 +6,9 @@ library(snpStats)
 library(Matrix)
 library(gridExtra)  # for grid.arrange
 library(ggplot2)
-#library(graphbh)
 library(igraph)
-devtools::load_all('/Users/destati/Dropbox/001_Personal_Documents/000_Academic_Projects/graphbh/graphbh_dev')
+# Load the library
+library(depgraphFDR)
 
 source('R/gwas_utils.R')
 source('R/utils.R')
@@ -42,118 +41,127 @@ common_snps <- intersect(scz_data$SNP, colnames(ref_genotypes))
 scz_data <- scz_data[SNP %in% common_snps]
 ref_genotypes <- ref_genotypes[, scz_data$SNP]
 
-# Add columns
-scz_data = scz_data %>% 
-    mutate(
-        CHR = as.factor(CHR),
-        neglog10P = -log10(P)
-    )
 
-# Now, sample them down to just chromosome 1
-scz_data_sub = scz_data %>% 
-    filter(CHR == 6)
+# Make manhattan plot
+# based on https://r-graph-gallery.com/101_Manhattan_plot.html
+don <- scz_data %>% 
+    # Compute chromosome size
+    group_by(CHR) %>% 
+    summarise(chr_len=max(BP)) %>% 
+    
+    # Calculate cumulative position of each chromosome
+    mutate(tot=cumsum(as.numeric(chr_len))-as.numeric(chr_len)) %>%
+    # Add this info to the initial dataset
+    left_join(scz_data, ., by=c("CHR"="CHR")) %>%
+    
+    # Add a cumulative position of each SNP
+    arrange(CHR, BP) %>%
+    mutate( BPcum=BP+tot) %>% 
+    mutate(CHRfac = factor(CHR, levels = sort(unique(CHR))))
 
-# Then sort in chromosome order:
-scz_data_sub <- scz_data_sub %>%
-    arrange(CHR, BP)
+axisdf = don %>%
+    group_by(CHR) %>%
+    summarize(center=( max(BPcum) + min(BPcum) ) / 2 )
 
-# Only include the eSNPs, sorted by location
-ref_genotypes_sub <- ref_genotypes[, scz_data_sub$SNP]
-
-# Check the maximum depth 
-max_depth = find_depth(scz_data_sub$BP, threshold = 500*10^3)
-
-# free some RAM
-rm(brainvar_eqtl_sheets)
-#rm(ref_genotypes)
-
-# Now check the LD
-
-LDsnp <- ld(ref_genotypes_sub, stats=c("R.squared"), depth=max_depth)
-depmat = (LDsnp > 0.1)
-depmat = forceSymmetric(depmat)
-depplt = image(depmat, lwd = 0, useRaster = TRUE, col.regions = c("white", "black"), sub = "Dependency Matrix (Chromosome 6)", cex.sub = 0.2)
-
-
-
-# Plot
-manhatplt = ggplot(scz_data_sub, aes(x = BP, y = neglog10P)) +
-    geom_point(alpha = 0.6, color = 'steelblue') +
-    labs(
-        x = "Genomic Position (Chromosome 6)",
-        y = expression(-log[10](p))
-    ) +
-    theme_minimal() +
-    theme(
-        legend.position = "none",
+manhatplt = ggplot(don, aes(x=BPcum, y=-log10(P))) +
+    
+    # Show all points
+    geom_point( aes(color=CHRfac), alpha=0.5, size=0.3) +
+    scale_color_manual(values = rep(c("coral", "skyblue"), 11 )) +
+    
+    # custom X axis:
+    scale_x_continuous( label = axisdf$CHR, breaks= axisdf$center ) +
+    scale_y_continuous(expand = c(0, 0) ) +     # remove space between plot area and x axis
+    
+    # Custom the theme:
+    theme_bw() +
+    theme( 
+        legend.position="none",
+        panel.border = element_blank(),
+        panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank()
-    )
+    ) + 
+    labs(x = "Chromosomal position", y = expression(-log[10](p)))
 
+# Make dependency matrix plots
 
-# Finally, run the methods
-print('Running methods...')
-reslist = vector(mode = 'list', length = 2)
-
-for(i in 1:2){
-    if(i == 1){
-        pvals = scz_data_sub$P
-        xlab = "Method (Chromosome 6 p-values)"
-        LDsnp <- ld(ref_genotypes_sub, stats=c("R.squared"), depth=max_depth)
-    }
-    else{
-        pvals = scz_data$P
-        xlab = "Method (all chromosomes)"
-        LDsnp <- ld(ref_genotypes, stats=c("R.squared"), depth=max_depth)
-    }
-    # first, subset with the BH procedure
-    rejBH = BH(alpha = 0.05, pvals)
-    pvalsBH = pvals[rejBH]
-    # obtain the dependency graph
-    depmat = (LDsnp > 0.1)
-    depmat = forceSymmetric(depmat)
+chrs = c(1, 2)
+deppltlist = list()
+for(chr in chrs){
+    scz_data_sub = scz_data %>% 
+        filter(CHR == chr)
     
-    # # blockify
-    # # ---- 1.  connected–component labels ---------------------------------
-    # g        <- graph_from_adjacency_matrix(depmat, mode = "undirected")
-    # memb     <- components(g)$membership          # integer vector length = n
-    # n        <- length(memb)
-    # n_comp   <- max(memb)                         # number of components
-    # 
-    # ## ---- 2.  one‑hot encode the membership vector -----------------------
-    # ## This has exactly n non‑zeros, so it is trivially cheap to store.
-    # Z <- sparseMatrix(i = seq_len(n), j = memb, x = TRUE,
-    #                   dims = c(n, n_comp), repr = "C")   # logical n×n_comp
-    # 
-    # ## ---- 3.  same‑component ⇒ 1  (complete graph inside each block) -----
-    # ## tcrossprod(Z) = Z %*% t(Z) gives an n×n logical matrix whose (i,j)‑entry
-    # ## is TRUE  ⇔  vertices i and j are in the same component.
-    # Cliq <- tcrossprod(Z)
-    # Cliq <- as(Cliq, "lsCMatrix")          # symmetric logical sparse matrix
-    # depmatBH = Cliq[rejBH, rejBH]
-    # adjlistBH = adjmat_to_adjlist(depmatBH)
+    # Then sort in chromosome order:
+    scz_data_sub <- scz_data_sub %>%
+        arrange(CHR, BP)
     
-
-    depmatBH = depmat[rejBH, rejBH]
-    adjlistBH = adjmat_to_adjlist(depmatBH)
+    # Only include the eSNPs, sorted by location
+    ref_genotypes_sub <- ref_genotypes[, scz_data_sub$SNP]
     
-    # Now try the other procedures
-    RBH = length(rejBH)
-    m = length(pvals)
-    rejBY = BY(alpha = 0.05, pvals)
-    rejIndBH = IndBH(alpha = 0.05*RBH/m, pvalsBH, adjlistBH, block = TRUE)
-    rejIndBH3 = IndBH_plus(alpha = 0.05*RBH/m, recurse = 2, pvalsBH, adjlistBH, block = TRUE)
+    # Check the maximum depth 
+    max_depth = find_depth(scz_data_sub$BP, threshold = 500*10^3)
     
-    results = c(
-        length(rejBH),
-        length(rejBY), 
-        length(rejIndBH),
-        length(rejIndBH3)
-    )
+    # Now make check the LD figures
     
-    reslist[[i]] = results
-    
+    LDsnp <- ld(ref_genotypes_sub, stats=c("R.squared"), depth=max_depth)
+    depmat <- (LDsnp > 0.2)
+    depmat <- forceSymmetric(depmat)
+    diag(depmat) <- TRUE
+    chrstring = paste('Chromosome', chr)
+    depplt <- Matrix::image(depmat, lwd = 0, useRaster = TRUE, col.regions = c("white", "black"), sub = paste0("Dep. Matrix (", chrstring, ")"), cex.sub = 0.2)
+    deppltlist[[chrstring]] = depplt
 }
 
+# Finally, run the methods
+alpha = 0.01
+print('Running methods...')
+
+pvals = scz_data$P
+xlab = "Method (all chromosomes)"
+LDsnp <- ld(ref_genotypes, stats=c("R.squared"), depth=max_depth)
+# first, subset with the BH procedure
+rejBH = BH(alpha = alpha, pvals)
+pvalsBH = pvals[rejBH]
+# obtain the dependency graph
+depmat = (LDsnp > 0.2)
+depmat = forceSymmetric(depmat)
+
+# blockify---i.e., enforce block dependence so that FDR control is guaranteed
+
+# ---- 1.  connected–component labels ---------------------------------
+g        <- graph_from_adjacency_matrix(depmat, mode = "undirected")
+memb     <- components(g)$membership          # integer vector length = n
+n        <- length(memb)
+n_comp   <- max(memb)                         # number of components
+
+## ---- 2.  one‑hot encode the membership vector -----------------------
+## This has exactly n non‑zeros, so it is trivially cheap to store.
+Z <- sparseMatrix(i = seq_len(n), j = memb, x = TRUE,
+                  dims = c(n, n_comp), repr = "C")   # logical n×n_comp
+
+## ---- 3.  same‑component ⇒ 1  (complete graph inside each block) -----
+## tcrossprod(Z) = Z %*% t(Z) gives an n×n logical matrix whose (i,j)‑entry
+## is TRUE  ⇔  vertices i and j are in the same component.
+Cliq <- tcrossprod(Z)
+Cliq <- as(Cliq, "lsCMatrix")          # symmetric logical sparse matrix
+depmatBH = Cliq[rejBH, rejBH]
+adjlistBH = adjmat_to_adjlist(depmatBH)
+
+
+# Now try the other procedures
+RBH = length(rejBH)
+m = length(pvals)
+rejBY = BY(alpha = alpha, pvals)
+
+rejIndBH = IndBH(alpha = alpha*RBH/m, pvalsBH, adjlistBH, block = TRUE)
+rejIndBH3 = IndBH_plus(alpha = alpha*RBH/m, recurse = 2, pvalsBH, adjlistBH, block = TRUE)
+
+results = c(
+    length(rejBH),
+    length(rejBY), 
+    length(rejIndBH),
+    length(rejIndBH3)
+)
 
 method = c(
     'BH', 
@@ -162,27 +170,11 @@ method = c(
     'IndBH3'
 )
 
-resdf1 = data.frame(method = method, results = reslist[[1]], chromosome = 'Chromosome 6 only')
-resdfall = data.frame(method = method, results = reslist[[2]], chromosome = 'All Chromosomes')
-resdf = rbind(resdf1, resdfall)
-
-rejplt = ggplot(resdf, aes(x = method, y = results, fill = chromosome)) +
-    geom_bar(data = subset(resdf, chromosome == "All Chromosomes"),
-             aes(y = results, fill = chromosome),
-             stat = "identity", width = 0.6) +
-    
-    # overlay bar (e.g., Chromosome 6 only)
-    geom_bar(data = subset(resdf, chromosome == "Chromosome 6 only"),
-             aes(y = results, fill = chromosome),
-             stat = "identity", width = 0.6) +  # narrower width
-        scale_fill_manual(
-        values = c("Chromosome 6 only" = 'steelblue',
-          "All Chromosomes" = 'darkorange2'), 
-        name = "SNP Locations"
-    ) + 
+rejplt = ggplot(mapping = aes(x = method, y = results)) +
+    geom_bar(stat = "identity", width = 0.6, fill = 'steelblue') +
     theme_minimal() +
     labs(
-        x = 'Method',
+        x = bquote("Method (" * alpha == .(alpha) * ")"),
         y = "Number of Rejections"
     ) +
     theme(
@@ -195,38 +187,7 @@ rejplt = ggplot(resdf, aes(x = method, y = results, fill = chromosome)) +
 
 
 # Save all to one PDF
-pdf("plots/gwas_plot.pdf", width = 10, height = 3.5)
-grid.arrange(manhatplt, depplt, rejplt, ncol = 3)
+pdf("plots/gwas_plot.pdf", width = 8.5, height = 5)
+grid.arrange(manhatplt, deppltlist[['Chromosome 1']], deppltlist[['Chromosome 2']], rejplt, layout_matrix = rbind(c(1,1,1), c(2,3,4)), heights = c(1,1.5))
 dev.off()
-
-# # check how long it takes
-# start_time <- Sys.time()
-# IndBH_plus(alpha = 0.05*RBH/m, recurse = 2, pvalsBH, adjlistBH)
-# end_time <- Sys.time()
-# end_time - start_time
-# 
-# start_time <- Sys.time()
-# IndBH(alpha = 0.05*RBH/m, pvalsBH, adjlistBH, block = TRUE)
-# end_time <- Sys.time()
-# end_time - start_time
-
-
-# depmatBH = Cliq[rejBH, rejBH]
-# adjlistBH = adjmat_to_adjlist(depmatBH)
-# 
-# 
-# depmatIndBH2 = Cliq[rejIndBH2, rejIndBH2]
-# adjlistIndBH2 = adjmat_to_adjlist(depmatIndBH2)
-# 
-# 
-# rejsBH_each_cluster = sapply(unique(adjlistBH), length)
-# rejsIndBH2_each_cluster = sapply(unique(adjlistIndBH2), length)
-# 
-# sbh = sort(rejsBH_each_cluster, TRUE)
-# sindbh2 = sort(rejsIndBH2_each_cluster, TRUE)
-# sindbh2 = c(sindbh2, rep(0, length(sbh) - length(sindbh2)))
-# diffs = sbh - sindbh2
-# 
-
-
 

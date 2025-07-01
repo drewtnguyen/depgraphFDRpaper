@@ -1,0 +1,1 @@
+parallel --jobs 8 --ungroup < jobs/gauss_jobs.sh

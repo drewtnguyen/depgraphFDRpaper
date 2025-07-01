@@ -1,2 +1,0 @@
-start = Sys.time(); IndBH(alpha = alpha,pvals = pvals, adjlist = adjlist); Sys.time() - start
-start = Sys.time(); IndBH_plus(recurse = 2, alpha = alpha,pvals = pvals, adjlist = adjlist); Sys.time() - start

@@ -1,1 +1,8 @@
 .DS_Store
+.Rproj.user
+*.pdf
+*.RDS
+*.html
+realdata/g1000_eur/
+realdata/daner_PGC_SCZ52_0513a.hq2.gz
+realdata/brainvar_eqtls.xlsx
